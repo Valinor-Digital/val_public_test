@@ -523,6 +523,17 @@ def _vintage_fade_color(vintage_frac: float) -> str:
     r, g, b = _rgb_lerp(blue, deep_yellow, vintage_frac)
     return f"rgb({r},{g},{b})"
 
+
+def _mob_dot_color(m: int, m_max: int) -> str:
+    """Color DQ dots by month-on-book: MOB 1 cooler, later MOBs warmer."""
+    m_max = max(m_max, 1)
+    t = (float(m) - 1.0) / max(float(m_max) - 1.0, 1.0)
+    cool = (20, 90, 140)
+    warm = (200, 95, 25)
+    r, g, b = _rgb_lerp(cool, warm, t)
+    return f"rgb({r},{g},{b})"
+
+
 def _cut_date_fade_color(cut_frac: float) -> str:
     # Cut dates fade blue -> orange over time.
     blue = (12, 64, 118)  # deep blue
@@ -842,65 +853,181 @@ def render_dq_tab(level: str):
         index=0,
         key=f"dq_bucket_{level}",
     )
+    dots_by_vintage = False
+    if level == "Deal Collateral":
+        dq_view = st.radio(
+            "DQ chart view",
+            ["Curves (Calendar MOB)", "Dots (by vintage month)"],
+            horizontal=True,
+            key="dq_chart_view_deal_collateral",
+        )
+        dots_by_vintage = dq_view == "Dots (by vintage month)"
+
     total_months = _get_months_back(level)
     max_term_months = 36
     mob_x = np.arange(0, max_term_months + 1, dtype=int)
     vintage_dates = _get_monthly_dates(total_months)  # origination months shown (consistent w/ Overview)
     _, real_age, projected_age = _make_dq_curves(level, dq_bucket, max_term_months + 1, max_term_months + 1)
+    as_of_period = pd.Timestamp(_DATA_END_DATE).to_period("M")
 
     fig = go.Figure()
-    # Base case projected line (one line for the whole pool).
-    fig.add_trace(
-        go.Scatter(
-            x=_plotly_int_list(mob_x),
-            y=_plotly_float_list(projected_age),
-            mode="lines",
-            name="Base Case",
-            line=dict(color="rgb(255, 127, 14)", width=3, dash="dot"),
-            hovertemplate=f"Projected {dq_bucket}: %{{y:.2f}}%<br>Calendar MOB: %{{x}}<extra></extra>",
-        )
-    )
 
-    # Real curves: one solid line per origination vintage (start month).
-    as_of_period = pd.Timestamp(_DATA_END_DATE).to_period("M")
-    for i in range(total_months):
-        vintage_period = pd.Timestamp(vintage_dates[i]).to_period("M")
-        real_max_mob = int((as_of_period - vintage_period).n)
-        real_max_mob = int(np.clip(real_max_mob, 0, max_term_months))
-        vintage_start = vintage_dates[i].strftime("%b %Y")
-        # Smoothly vary magnitude across vintages so each line is distinct, but still monotonic.
-        vintage_factor = 0.8 + 0.4 * (i / max(total_months - 1, 1))  # wider spread
-        vintage_frac = i / max(total_months - 1, 1)
-        # Plot on calendar axis so ALL curves start at Calendar MOB 0.
-        y = np.maximum.accumulate(real_age * vintage_factor)
-        y[0] = 0.0  # enforce exact start at 0
-        # Stop the real trace once we run out of real months for this vintage.
-        if real_max_mob < max_term_months:
-            y[real_max_mob + 1 :] = np.nan
+    if not dots_by_vintage:
+        # Base case projected line (one line for the whole pool).
         fig.add_trace(
             go.Scatter(
                 x=_plotly_int_list(mob_x),
-                y=_plotly_float_list(y),
+                y=_plotly_float_list(projected_age),
                 mode="lines",
-                name=vintage_start,
-                showlegend=True,
-                line=dict(color=_vintage_fade_color(vintage_frac), width=2, dash="solid"),
-                opacity=0.6,
-                connectgaps=False,
-                hovertemplate=f"Real {dq_bucket}: %{{y:.2f}}%<br>Vintage start: {vintage_start}<br>Calendar MOB: %{{x}}<extra></extra>",
+                name="Base Case",
+                line=dict(color="rgb(255, 127, 14)", width=3, dash="dot"),
+                hovertemplate=f"Projected {dq_bucket}: %{{y:.2f}}%<br>Calendar MOB: %{{x}}<extra></extra>",
             )
         )
 
-    fig.update_layout(
-        title=f"{dq_bucket} Curves (Real vs Base Case Projection)",
-        xaxis_title="Calendar MOB",
-        yaxis_title=f"{dq_bucket} (%)",
-        xaxis=dict(range=[0, max_term_months], dtick=6),
-        legend_title="Series",
-        template="plotly_white",
-        hovermode="closest",
-    )
-    st.plotly_chart(fig, width="stretch", key=f"perf_{level}_dq")
+        # Real curves: one solid line per origination vintage (start month).
+        for i in range(total_months):
+            vintage_period = pd.Timestamp(vintage_dates[i]).to_period("M")
+            real_max_mob = int((as_of_period - vintage_period).n)
+            real_max_mob = int(np.clip(real_max_mob, 0, max_term_months))
+            vintage_start = vintage_dates[i].strftime("%b %Y")
+            # Smoothly vary magnitude across vintages so each line is distinct, but still monotonic.
+            vintage_factor = 0.8 + 0.4 * (i / max(total_months - 1, 1))  # wider spread
+            vintage_frac = i / max(total_months - 1, 1)
+            # Plot on calendar axis so ALL curves start at Calendar MOB 0.
+            y = np.maximum.accumulate(real_age * vintage_factor)
+            y[0] = 0.0  # enforce exact start at 0
+            # Stop the real trace once we run out of real months for this vintage.
+            if real_max_mob < max_term_months:
+                y[real_max_mob + 1 :] = np.nan
+            fig.add_trace(
+                go.Scatter(
+                    x=_plotly_int_list(mob_x),
+                    y=_plotly_float_list(y),
+                    mode="lines",
+                    name=vintage_start,
+                    showlegend=True,
+                    line=dict(color=_vintage_fade_color(vintage_frac), width=2, dash="solid"),
+                    opacity=0.6,
+                    connectgaps=False,
+                    hovertemplate=f"Real {dq_bucket}: %{{y:.2f}}%<br>Vintage start: {vintage_start}<br>Calendar MOB: %{{x}}<extra></extra>",
+                )
+            )
+
+        fig.update_layout(
+            title=f"{dq_bucket} Curves (Real vs Base Case Projection)",
+            xaxis_title="Calendar MOB",
+            yaxis_title=f"{dq_bucket} (%)",
+            xaxis=dict(range=[0, max_term_months], dtick=6),
+            legend_title="Series",
+            template="plotly_white",
+            hovermode="closest",
+        )
+    else:
+        # Same y(mob) as curves; x = origination month. MOB 0 omitted; one trace per MOB (color + legend by MOB).
+        vintage_rows: list[tuple[pd.Timestamp, np.ndarray, int, str]] = []
+        for i in range(total_months):
+            vintage_period = pd.Timestamp(vintage_dates[i]).to_period("M")
+            real_max_mob = int((as_of_period - vintage_period).n)
+            real_max_mob = int(np.clip(real_max_mob, 0, max_term_months))
+            vintage_start = vintage_dates[i].strftime("%b %Y")
+            vintage_factor = 0.8 + 0.4 * (i / max(total_months - 1, 1))
+            y = np.maximum.accumulate(real_age * vintage_factor)
+            y[0] = 0.0
+            if real_max_mob < max_term_months:
+                y[real_max_mob + 1 :] = np.nan
+            vt = pd.Timestamp(vintage_dates[i]).normalize()
+            vintage_rows.append((vt, y, real_max_mob, vintage_start))
+
+        max_mob_seen = max((r[2] for r in vintage_rows), default=0)
+
+        x_min = pd.Timestamp(vintage_dates[0]).normalize()
+        x_max = pd.Timestamp(vintage_dates[-1]).normalize()
+        fig.add_trace(
+            go.Scatter(
+                x=[x_min, x_max],
+                y=[3.0, 3.0],
+                mode="lines",
+                line=dict(color="red", width=2, dash="dot"),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=[x_min, x_max],
+                y=[5.0, 5.0],
+                mode="lines",
+                line=dict(color="red", width=2, dash="dot"),
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+
+        for m in range(1, max_mob_seen + 1):
+            xs_dt: list[pd.Timestamp] = []
+            ys: list[float] = []
+            cdata: list[str] = []
+            for vt, y, real_max_mob, vintage_start in vintage_rows:
+                if m <= real_max_mob:
+                    xs_dt.append(vt)
+                    ys.append(float(y[m]))
+                    cdata.append(vintage_start)
+            if not xs_dt:
+                continue
+            mob_color = _mob_dot_color(m, max_mob_seen)
+            fig.add_trace(
+                go.Scatter(
+                    x=xs_dt,
+                    y=_plotly_float_list(ys),
+                    mode="markers",
+                    name=f"MOB {m}",
+                    marker=dict(size=8, color=mob_color, opacity=0.85, line=dict(width=0)),
+                    customdata=cdata,
+                    hovertemplate=(
+                        f"Real {dq_bucket}: %{{y:.2f}}%<br>"
+                        "Vintage: %{customdata}<br>"
+                        f"MOB {m}<extra></extra>"
+                    ),
+                )
+            )
+
+        fig.update_layout(
+            title=f"{dq_bucket} by Vintage",
+            xaxis_title="Vintage",
+            xaxis_tickformat="%b\n%Y",
+            xaxis_tickangle=DATE_X_TICKANGLE,
+            yaxis=dict(range=[0, 9], title=f"{dq_bucket} (%)"),
+            legend_title="Month on book",
+            template="plotly_white",
+            hovermode="closest",
+            annotations=[
+                dict(
+                    x=x_max,
+                    y=3.22,
+                    xref="x",
+                    yref="y",
+                    text="Covenant: 3% DQ30+ at MOB 6",
+                    showarrow=False,
+                    xanchor="right",
+                    yanchor="bottom",
+                    font=dict(color="red", size=11),
+                ),
+                dict(
+                    x=x_max,
+                    y=5.22,
+                    xref="x",
+                    yref="y",
+                    text="Covenant: 5% DQ30+ at MOB 9",
+                    showarrow=False,
+                    xanchor="right",
+                    yanchor="bottom",
+                    font=dict(color="red", size=11),
+                ),
+            ],
+        )
+
+    st.plotly_chart(fig, width="stretch", key=f"perf_{level}_dq_{'dots' if dots_by_vintage else 'curves'}")
 
 
 def render_cgl_tab(level: str):
